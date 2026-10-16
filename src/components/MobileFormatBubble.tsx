@@ -21,11 +21,11 @@ const CIRCLED_NUMBERS = [
 ] as const;
 
 type Pos = {
-  anchorTop: number;
-  anchorBottom: number;
-  center: number;
-  /** 커서가 있는 문단의 윗변. 막대는 이 문단 위에 두고, 가로는 커서를 따른다. */
-  blockTop: number;
+  /** 보이는 본문 상자. 막대는 커서 줄이 아니라 이 상자의 상단에 둔다. */
+  editorTop: number;
+  editorBottom: number;
+  editorLeft: number;
+  editorWidth: number;
 };
 
 /** TipTap 커서/선택 좌표 (collapsed caret 포함 — iOS DOM rect 빈 값 보완) */
@@ -69,23 +69,11 @@ function rectFromDomSelection(): DOMRect | null {
   return r;
 }
 
-/** 커서가 들어 있는 문단의 화면상 윗변 */
-function blockTopForCaret(): number | null {
+function editorBox(): DOMRect | null {
   const ed = getActiveReportEditor();
   if (!ed) return null;
   try {
-    const head = ed.state.selection.head;
-    const dom = ed.view.domAtPos(head);
-    const raw = dom.node;
-    const el =
-      raw.nodeType === Node.ELEMENT_NODE
-        ? (raw as Element)
-        : raw.parentElement;
-    const block = el?.closest(
-      "p, li, h1, h2, h3, h4, blockquote, pre, td, th"
-    );
-    if (!block) return null;
-    return block.getBoundingClientRect().top;
+    return ed.view.dom.getBoundingClientRect();
   } catch {
     return null;
   }
@@ -106,9 +94,8 @@ function formatBubbleWidth(maxBarWidth: number) {
 }
 
 /**
- * 서식 바는 커서를 따라 움직인다.
- * 세로는 커서가 있는 문단의 상단, 가로는 커서 위치.
- * 커서가 있는 글줄 위에 겹치지 않는다.
+ * 커서가 본문 안에 있어도 서식 바는 보이는 본문 상단에 둔다.
+ * 커서 줄 바로 위로는 내려가지 않는다.
  */
 function useFormatBubbleAnchor(active: boolean) {
   const [pos, setPos] = useState<Pos | null>(null);
@@ -125,14 +112,17 @@ function useFormatBubbleAnchor(active: boolean) {
     let hideTimer: ReturnType<typeof setTimeout> | null = null;
     let selecting = false;
 
-    const place = (rect: DOMRect) => {
+    const place = () => {
+      const box = editorBox();
+      if (!box || box.width < 40 || box.height < 20) return false;
       setPos({
-        anchorTop: rect.top,
-        anchorBottom: rect.bottom,
-        center: rect.left + rect.width / 2,
-        blockTop: blockTopForCaret() ?? rect.top,
+        editorTop: box.top,
+        editorBottom: box.bottom,
+        editorLeft: box.left,
+        editorWidth: box.width,
       });
       setVisible(true);
+      return true;
     };
 
     const update = () => {
@@ -142,14 +132,12 @@ function useFormatBubbleAnchor(active: boolean) {
           setVisible(false);
           return;
         }
-        const rect = resolveAnchorRect();
-        if (!rect) {
-          // 서식 버튼 탭 순간 선택이 잠깐 비는 경우 — 바로 숨기지 않음
+        const focused = Boolean(resolveAnchorRect());
+        if (!focused || !place()) {
+          // 서식 버튼 탭 순간 포커스가 잠깐 빠지는 경우 — 바로 숨기지 않음
           if (hideTimer) clearTimeout(hideTimer);
           hideTimer = setTimeout(() => {
-            const again = resolveAnchorRect();
-            if (!again) setVisible(false);
-            else place(again);
+            if (!resolveAnchorRect() || !place()) setVisible(false);
           }, 280);
           return;
         }
@@ -157,7 +145,6 @@ function useFormatBubbleAnchor(active: boolean) {
           clearTimeout(hideTimer);
           hideTimer = null;
         }
-        place(rect);
       });
     };
 
@@ -234,7 +221,7 @@ function useFormatBubbleAnchor(active: boolean) {
 const MOBILE_BUBBLE_WIDTH = 360;
 
 /**
- * 아이폰 등: 커서가 있는 문단 상단에 붙는 글자 서식 바.
+ * 아이폰 등: 커서가 있어도 보이는 본문 상단에 붙는 글자 서식 바.
  */
 export function MobileFormatBubble({
   active,
@@ -336,7 +323,7 @@ const YELLOW_HIGHLIGHT =
   HIGHLIGHT_COLORS.find((c) => c.id === "yellow")?.bg ?? "#fef08a";
 
 /**
- * 데스크톱: 커서가 있는 문단 상단에 붙는 서식. 굵게·번호·노란 형광만.
+ * 데스크톱: 커서가 있어도 보이는 본문 상단에 붙는 서식. 굵게·번호·노란 형광만.
  */
 export function DesktopFormatBubble({
   active,
@@ -422,21 +409,20 @@ function FormatBubbleFrame({
     const viewWidth = vv?.width ?? window.innerWidth;
     const viewBottom =
       (vv?.offsetTop ?? 0) + (vv?.height ?? window.innerHeight) - 8;
-    const lineTop = pos.anchorTop;
-    const lineBottom = pos.anchorBottom;
-    const overlapsLine = (t: number) =>
-      t < lineBottom - 1 && t + h > lineTop + 1;
-    // 문단 윗변 바로 위. 화면 밖이면 화면 상단으로만 올리고, 커서 줄 아래로는 내리지 않는다.
-    let top = pos.blockTop - h - gap;
-    if (top < viewTop) top = viewTop;
-    if (overlapsLine(top)) top = lineTop - h - gap;
-    const clear = !overlapsLine(top) && top + h <= viewBottom;
+    const visibleTop = Math.max(pos.editorTop, viewTop);
+    const visibleBottom = Math.min(pos.editorBottom, viewBottom);
+    let top = visibleTop + gap;
+    if (top + h > visibleBottom - gap) {
+      top = Math.max(visibleTop, visibleBottom - h - gap);
+    }
+    const barWidth = width ?? w;
     const left = Math.max(
       viewLeft + 8,
-      Math.min(pos.center - w / 2, viewLeft + viewWidth - w - 8)
+      Math.min(pos.editorLeft + 8, viewLeft + viewWidth - barWidth - 8)
     );
+    const clear = top + h <= viewBottom && visibleBottom - visibleTop > h;
     setBox({ top, left, ready: true, clear });
-  }, [node, pos]);
+  }, [node, pos, width]);
 
   if (typeof document === "undefined") return null;
 
