@@ -112,7 +112,19 @@ function looksLikeFailure(text: string, status: number): boolean {
   return false;
 }
 
-/** 서버에서 youtube-transcript.ai 자막을 가져온다 (키 불필요) */
+/** 인증·한도 오류는 언어를 바꿔 재시도하지 않는다. 재시도마다 일일 횟수가 차감된다. */
+class TranscriptRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TranscriptRequestError";
+  }
+}
+
+function transcriptAiApiKey(): string {
+  return process.env.YOUTUBE_TRANSCRIPT_AI_API_KEY?.trim() ?? "";
+}
+
+/** 서버에서 youtube-transcript.ai 자막을 가져온다. 키는 서버 환경 변수만 사용한다. */
 export async function fetchYoutubeTranscriptAi(
   videoId: string,
   opts?: { lang?: string; timeoutMs?: number }
@@ -120,6 +132,13 @@ export async function fetchYoutubeTranscriptAi(
   const id = videoId.trim();
   if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) {
     throw new Error("유효한 YouTube 영상 ID가 아닙니다.");
+  }
+
+  const apiKey = transcriptAiApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "youtube-transcript.ai API 키가 없습니다. .env.local에 YOUTUBE_TRANSCRIPT_AI_API_KEY를 넣고 개발 서버를 다시 시작하세요. 키는 https://youtube-transcript.ai/get-api-key 에서 만듭니다."
+    );
   }
 
   const timeoutMs = opts?.timeoutMs ?? 45_000;
@@ -135,6 +154,7 @@ export async function fetchYoutubeTranscriptAi(
         method: "GET",
         headers: {
           Accept: "text/plain, text/markdown, */*",
+          Authorization: `Bearer ${apiKey}`,
           "User-Agent":
             "Mozilla/5.0 (compatible; YouTubeFactCheck/1.0; +local)",
         },
@@ -142,6 +162,24 @@ export async function fetchYoutubeTranscriptAi(
         cache: "no-store",
       });
       const raw = await res.text();
+      if (res.status === 401 || /api key required/i.test(raw)) {
+        throw new TranscriptRequestError(
+          "youtube-transcript.ai API 키가 거부되었습니다(HTTP 401). .env.local의 YOUTUBE_TRANSCRIPT_AI_API_KEY를 확인한 뒤 개발 서버를 다시 시작하세요."
+        );
+      }
+      if (res.status === 429) {
+        throw new TranscriptRequestError(
+          "youtube-transcript.ai 오늘 호출 한도를 넘었습니다(HTTP 429). 무료 키는 하루 10회이며, 00:00 UTC에 초기화됩니다."
+        );
+      }
+      if (
+        res.status === 404 &&
+        /video is unavailable|transcript unavailable/i.test(raw)
+      ) {
+        throw new TranscriptRequestError(
+          "이 영상은 youtube-transcript.ai에서 열리지 않습니다(HTTP 404). 유튜브에서 비공개·삭제·지역 제한이거나, 그 서비스가 영상을 읽지 못하는 상태입니다."
+        );
+      }
       if (looksLikeFailure(raw, res.status)) {
         lastError = `자막 응답이 비어 있거나 오류입니다. (${lang || "default"}, HTTP ${res.status})`;
         return null;
@@ -153,6 +191,7 @@ export async function fetchYoutubeTranscriptAi(
       }
       return { text, raw, sourceUrl, lang: lang || transcriptTrackMeta(raw).lang || "default" };
     } catch (e) {
+      if (e instanceof TranscriptRequestError) throw e;
       lastError =
         e instanceof Error ? e.message : "자막 API 요청에 실패했습니다.";
       return null;

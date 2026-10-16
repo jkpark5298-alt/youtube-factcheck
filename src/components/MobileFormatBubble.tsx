@@ -20,7 +20,13 @@ const CIRCLED_NUMBERS = [
   "⑩",
 ] as const;
 
-type Pos = { anchorTop: number; anchorBottom: number; center: number };
+type Pos = {
+  anchorTop: number;
+  anchorBottom: number;
+  center: number;
+  /** 커서가 있는 문단의 윗변. 막대는 이 문단 위에 두고, 가로는 커서를 따른다. */
+  blockTop: number;
+};
 
 /** TipTap 커서/선택 좌표 (collapsed caret 포함 — iOS DOM rect 빈 값 보완) */
 function rectFromEditor(editor: Editor): DOMRect | null {
@@ -63,6 +69,28 @@ function rectFromDomSelection(): DOMRect | null {
   return r;
 }
 
+/** 커서가 들어 있는 문단의 화면상 윗변 */
+function blockTopForCaret(): number | null {
+  const ed = getActiveReportEditor();
+  if (!ed) return null;
+  try {
+    const head = ed.state.selection.head;
+    const dom = ed.view.domAtPos(head);
+    const raw = dom.node;
+    const el =
+      raw.nodeType === Node.ELEMENT_NODE
+        ? (raw as Element)
+        : raw.parentElement;
+    const block = el?.closest(
+      "p, li, h1, h2, h3, h4, blockquote, pre, td, th"
+    );
+    if (!block) return null;
+    return block.getBoundingClientRect().top;
+  } catch {
+    return null;
+  }
+}
+
 function resolveAnchorRect(): DOMRect | null {
   const ed = getActiveReportEditor();
   if (ed) {
@@ -77,7 +105,11 @@ function formatBubbleWidth(maxBarWidth: number) {
   return Math.min(maxBarWidth, window.innerWidth - 16);
 }
 
-/** 커서/선택 위에 서식 바를 고정 */
+/**
+ * 서식 바는 커서를 따라 움직인다.
+ * 세로는 커서가 있는 문단의 상단, 가로는 커서 위치.
+ * 커서가 있는 글줄 위에 겹치지 않는다.
+ */
 function useFormatBubbleAnchor(active: boolean) {
   const [pos, setPos] = useState<Pos | null>(null);
   const [visible, setVisible] = useState(false);
@@ -98,6 +130,7 @@ function useFormatBubbleAnchor(active: boolean) {
         anchorTop: rect.top,
         anchorBottom: rect.bottom,
         center: rect.left + rect.width / 2,
+        blockTop: blockTopForCaret() ?? rect.top,
       });
       setVisible(true);
     };
@@ -201,7 +234,7 @@ function useFormatBubbleAnchor(active: boolean) {
 const MOBILE_BUBBLE_WIDTH = 360;
 
 /**
- * 아이폰 등: 커서/선택 바로 위에 붙는 글자 서식 바.
+ * 아이폰 등: 커서가 있는 문단 상단에 붙는 글자 서식 바.
  */
 export function MobileFormatBubble({
   active,
@@ -303,7 +336,7 @@ const YELLOW_HIGHLIGHT =
   HIGHLIGHT_COLORS.find((c) => c.id === "yellow")?.bg ?? "#fef08a";
 
 /**
- * 데스크톱: 커서/선택 바로 위에 붙는 서식. 굵게·번호·노란 형광만.
+ * 데스크톱: 커서가 있는 문단 상단에 붙는 서식. 굵게·번호·노란 형광만.
  */
 export function DesktopFormatBubble({
   active,
@@ -393,12 +426,11 @@ function FormatBubbleFrame({
     const lineBottom = pos.anchorBottom;
     const overlapsLine = (t: number) =>
       t < lineBottom - 1 && t + h > lineTop + 1;
-    let top = lineTop - h - gap;
-    const below = lineBottom + gap;
-    if (top < viewTop || overlapsLine(top)) {
-      if (!overlapsLine(below) && below + h <= viewBottom) top = below;
-    }
-    const clear = !overlapsLine(top);
+    // 문단 윗변 바로 위. 화면 밖이면 화면 상단으로만 올리고, 커서 줄 아래로는 내리지 않는다.
+    let top = pos.blockTop - h - gap;
+    if (top < viewTop) top = viewTop;
+    if (overlapsLine(top)) top = lineTop - h - gap;
+    const clear = !overlapsLine(top) && top + h <= viewBottom;
     const left = Math.max(
       viewLeft + 8,
       Math.min(pos.center - w / 2, viewLeft + viewWidth - w - 8)

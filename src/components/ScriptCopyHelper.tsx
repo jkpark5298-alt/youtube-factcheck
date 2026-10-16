@@ -11,11 +11,6 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { extractVideoId } from "@/lib/youtube";
-import {
-  cleanYoutubeTranscriptAi,
-  isKoreanTrackCode,
-  transcriptTrackMeta,
-} from "@/lib/youtube-transcript-ai";
 
 /**
  * 유튜브 페이지에서 실행 → 자막을 클립보드에 복사.
@@ -96,45 +91,6 @@ export function ScriptCopyHelper({
     setTimeout(() => setCopied(null), 4000);
   }
 
-  async function fetchDirectFromApp(id: string): Promise<string | null> {
-    const base = `https://youtube-transcript.ai/transcript/${id}.txt`;
-    const load = async (url: string) => {
-      try {
-        const res = await fetch(url, {
-          signal: AbortSignal.timeout(40_000),
-        });
-        if (!res.ok) return null;
-        const raw = await res.text();
-        const text = cleanYoutubeTranscriptAi(raw);
-        if (text.length < 80) return null;
-        return { raw, text };
-      } catch {
-        return null;
-      }
-    };
-
-    const first = await load(base);
-    if (first) {
-      const meta = transcriptTrackMeta(first.raw);
-      if (
-        !isKoreanTrackCode(meta.lang) &&
-        meta.available.some(isKoreanTrackCode)
-      ) {
-        const ko = await load(`${base}?lang=ko`);
-        if (ko && isKoreanTrackCode(transcriptTrackMeta(ko.raw).lang)) {
-          return ko.text;
-        }
-      }
-      return first.text;
-    }
-
-    for (const lang of ["ko", "en"]) {
-      const next = await load(`${base}?lang=${lang}`);
-      if (next) return next.text;
-    }
-    return null;
-  }
-
   async function fetchTranscriptAuto() {
     setFetchErr(null);
     setFetchMsg(null);
@@ -144,19 +100,7 @@ export function ScriptCopyHelper({
     }
     setFetching(true);
     try {
-      // 1) 브라우저 → youtube-transcript.ai 직접 (CORS 허용)
-      if (videoId) {
-        const direct = await fetchDirectFromApp(videoId);
-        if (direct) {
-          onScriptFetched?.(direct);
-          setFetchMsg(
-            `${direct.length.toLocaleString()}자를 ② 스크립트(자막) 칸에 넣었습니다.`
-          );
-          return;
-        }
-      }
-
-      // 2) 서버 프록시 재시도
+      // 키는 서버 환경 변수에만 둔다. 브라우저에서 직접 호출하면 401이 나고 키가 노출된다.
       const q = videoId
         ? `videoId=${encodeURIComponent(videoId)}`
         : `url=${encodeURIComponent(youtubeUrl!.trim())}`;
@@ -280,8 +224,8 @@ export function ScriptCopyHelper({
             </p>
           )}
           <p className="text-[11px] text-ink-500 leading-relaxed">
-            서비스: youtube-transcript.ai (무료 API). 자막이 없는 영상은 실패할
-            수 있습니다.
+            서버에 설정한 youtube-transcript.ai API 키로 가져옵니다. 무료 키는
+            하루 10회입니다. 자막이 없는 영상은 실패할 수 있습니다.
           </p>
         </div>
       )}

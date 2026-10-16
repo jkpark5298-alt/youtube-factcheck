@@ -70,9 +70,9 @@ http://localhost:3000
 git remote add origin https://github.com/<USER>/youtube-factcheck.git
 git push -u origin master
 
-# 2) Vercel 배포 (프로젝트명 예: builder)
+# 2) Vercel 배포 (프로젝트명: youtube-factcheck)
 npx vercel login
-npx vercel --prod --name builder
+npx vercel --prod --name youtube-factcheck
 ```
 
 ### 필수(권장): Neon + Vercel Blob
