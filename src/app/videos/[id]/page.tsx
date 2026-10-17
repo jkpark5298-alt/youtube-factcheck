@@ -1,4 +1,5 @@
 import { AiPasteInbox } from "@/components/AiPasteInbox";
+import { FlowProgress } from "@/components/FlowProgress";
 import { ReportCreateForm } from "@/components/ReportCreateForm";
 import { ThumbnailEditor } from "@/components/ThumbnailEditor";
 import { getVideo, upsertVideo } from "@/lib/store";
@@ -17,6 +18,7 @@ import { UserTagsEditor } from "@/components/UserTagsEditor";
 import { SavedTranscriptPanel } from "@/components/SavedTranscriptPanel";
 import { VideoProcessingPoller } from "@/components/VideoProcessingPoller";
 import { VideoNotFoundRecovery } from "@/components/VideoNotFoundRecovery";
+import { nextFlowStepForVideo } from "@/lib/flow-steps";
 import { isYoutubeInput, isUrlArticleInput } from "@/lib/input-mode";
 import { libraryCardLabel, libraryStage } from "@/lib/library";
 import { formatTagList } from "@/lib/tags";
@@ -96,23 +98,7 @@ export default async function VideoDetailPage({
       ? "요약 (선택)"
       : "내용 요약";
 
-  const stepItems = [
-    {
-      n: "1–4",
-      t: "자막",
-      on: true,
-    },
-    {
-      n: "5–8",
-      t: "요약",
-      on: video.overview.trim().length >= 40 || awaiting || ready,
-    },
-    {
-      n: "9–10",
-      t: "보고서",
-      on: ready || Boolean(video.report),
-    },
-  ];
+  const flowCurrent = nextFlowStepForVideo(video);
 
   return (
     <div className="space-y-6 sm:space-y-8 pb-24 sm:pb-8">
@@ -121,22 +107,7 @@ export default async function VideoDetailPage({
         status={video.status}
         errorMessage={video.errorMessage}
       />
-      <ol className="grid grid-cols-3 gap-2 text-center text-xs sm:text-sm">
-        {stepItems.map((s) => (
-          <li
-            key={s.n}
-            className={`rounded-xl border px-2 py-2.5 ${
-              s.on
-                ? "border-accent/40 bg-accent-muted/50 text-ink-900"
-                : "border-ink-200 bg-white/60 text-ink-400"
-            }`}
-          >
-            <span className="font-medium">
-              {s.n}. {s.t}
-            </span>
-          </li>
-        ))}
-      </ol>
+      <FlowProgress current={flowCurrent} />
 
       {!ready && video.overview.trim().length < 40 ? (
         <AiPasteInbox video={video} />

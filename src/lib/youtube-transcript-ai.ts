@@ -79,20 +79,40 @@ export function transcriptTrackMeta(raw: string): {
   lang: string;
   available: string[];
 } {
-  const lang =
+  const langRaw =
     raw
-      .match(/^Language:\s*([A-Za-z]{2,8}(?:-[A-Za-z0-9]+)?)/m)?.[1]
+      .match(/^Language:\s*([A-Za-z0-9-]{2,12})/m)?.[1]
       ?.toLowerCase() ?? "";
+  // "en (auto-generated)" → en, "a-ko" → a-ko
+  const lang = langRaw;
   const others = raw.match(/^Other available languages:\s*(.+)$/im)?.[1] ?? "";
-  const available = [
+  const fromParen = [
     ...others.matchAll(/\(([A-Za-z]{2,8}(?:-[A-Za-z0-9]+)?)\)/g),
   ].map((m) => m[1].toLowerCase());
+  const fromToken = [
+    ...others.matchAll(/\b(a-[a-z]{2}|[a-z]{2}(?:-[A-Za-z0-9]+)?)\b/gi),
+  ].map((m) => m[1].toLowerCase());
+  const available = [...new Set([...fromParen, ...fromToken])];
   return { lang, available };
 }
 
 export function isKoreanTrackCode(code: string): boolean {
   const c = code.toLowerCase();
-  return c === "ko" || c.startsWith("ko-");
+  return (
+    c === "ko" ||
+    c.startsWith("ko-") ||
+    c === "a-ko" ||
+    c.startsWith("a-ko")
+  );
+}
+
+/** 본문에 한글이 충분히 있으면 한국어 자막으로 본다. */
+export function looksLikeKoreanText(text: string): boolean {
+  const sample = text.slice(0, 2500);
+  const hangul = (sample.match(/[\uAC00-\uD7A3]/g) || []).length;
+  const latin = (sample.match(/[A-Za-z]/g) || []).length;
+  if (hangul < 20) return false;
+  return hangul >= latin * 0.35;
 }
 
 function looksLikeFailure(text: string, status: number): boolean {
@@ -189,7 +209,14 @@ export async function fetchYoutubeTranscriptAi(
         lastError = "가져온 자막이 너무 짧습니다.";
         return null;
       }
-      return { text, raw, sourceUrl, lang: lang || transcriptTrackMeta(raw).lang || "default" };
+      const meta = transcriptTrackMeta(raw);
+      return {
+        text,
+        raw,
+        sourceUrl,
+        lang: lang || meta.lang || "default",
+        meta,
+      };
     } catch (e) {
       if (e instanceof TranscriptRequestError) throw e;
       lastError =
@@ -198,6 +225,16 @@ export async function fetchYoutubeTranscriptAi(
     }
   };
 
+  /** 헤더가 ko이거나 본문에 한글이 충분하면 한국어로 채택 */
+  function acceptAsKorean(
+    picked: NonNullable<Awaited<ReturnType<typeof pull>>>
+  ): boolean {
+    return (
+      isKoreanTrackCode(picked.meta.lang) || looksLikeKoreanText(picked.text)
+    );
+  }
+
+  // 1) 호출자가 언어를 지정한 경우
   if (preferred) {
     const picked = await pull(preferred);
     if (picked) {
@@ -209,18 +246,17 @@ export async function fetchYoutubeTranscriptAi(
     }
   }
 
+  // 2) 한국어 우선 — 기본 트랙이 영문 자동자막인 경우를 막기 위해 ko를 먼저 시도
+  if (preferred !== "ko") {
+    const ko = await pull("ko");
+    if (ko && acceptAsKorean(ko)) {
+      return { text: ko.text, langTried: "ko", sourceUrl: ko.sourceUrl };
+    }
+  }
+
+  // 3) 서비스 기본 트랙 (ko 없거나 한글이 아닐 때)
   const first = await pull("");
   if (first) {
-    const meta = transcriptTrackMeta(first.raw);
-    if (
-      !isKoreanTrackCode(meta.lang) &&
-      meta.available.some(isKoreanTrackCode)
-    ) {
-      const ko = await pull("ko");
-      if (ko && isKoreanTrackCode(transcriptTrackMeta(ko.raw).lang)) {
-        return { text: ko.text, langTried: "ko", sourceUrl: ko.sourceUrl };
-      }
-    }
     return {
       text: first.text,
       langTried: first.lang,
@@ -228,15 +264,11 @@ export async function fetchYoutubeTranscriptAi(
     };
   }
 
-  for (const lang of ["ko", "en"]) {
-    if (lang === preferred) continue;
-    const picked = await pull(lang);
-    if (picked) {
-      return {
-        text: picked.text,
-        langTried: lang,
-        sourceUrl: picked.sourceUrl,
-      };
+  // 4) 영어 폴백
+  if (preferred !== "en") {
+    const en = await pull("en");
+    if (en) {
+      return { text: en.text, langTried: "en", sourceUrl: en.sourceUrl };
     }
   }
 

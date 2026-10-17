@@ -3,6 +3,7 @@ import {
   cleanYoutubeTranscriptAi,
   dedupeTranscriptRepeats,
   isKoreanTrackCode,
+  looksLikeKoreanText,
   transcriptTrackMeta,
 } from "../src/lib/youtube-transcript-ai";
 
@@ -52,7 +53,16 @@ const meta = transcriptTrackMeta(`Language: en (auto-generated)
 Other available languages: a-id (id) [auto], a-ko (ko) [auto]
 `);
 assert.equal(meta.lang, "en");
-assert.deepEqual(meta.available, ["id", "ko"]);
+assert.ok(meta.available.includes("ko"));
+assert.ok(meta.available.includes("a-ko"));
 assert.equal(isKoreanTrackCode("ko"), true);
+assert.equal(isKoreanTrackCode("a-ko"), true);
 assert.equal(meta.available.some(isKoreanTrackCode), true);
-console.log("OK transcriptTrackMeta");
+assert.equal(looksLikeKoreanText("Hello world this is English only"), false);
+assert.equal(
+  looksLikeKoreanText(
+    "안녕하세요 오늘은 인류 진화에 대해 이야기합니다. 고등학교 교과서의 인류 진화 사다리 그림은 실제와 다릅니다."
+  ),
+  true
+);
+console.log("OK transcriptTrackMeta + looksLikeKoreanText");

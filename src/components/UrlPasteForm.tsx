@@ -5,12 +5,18 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
-  Circle,
   Copy,
-  Loader2,
   Link2,
+  Loader2,
 } from "lucide-react";
-import { FLOW, flowLabel, PENDING_OVERVIEW_KEY } from "@/lib/flow-steps";
+import {
+  FLOW,
+  flowLabel,
+  NEXT_STEP_YELLOW,
+  NEXT_STEP_YELLOW_BTN,
+  PENDING_OVERVIEW_KEY,
+  nextFlowStepForHome,
+} from "@/lib/flow-steps";
 import { hasUsablePastedScript, normalizePastedText } from "@/lib/paste";
 import {
   EXTERNAL_APP_LABEL,
@@ -18,6 +24,7 @@ import {
   type ExternalAppId,
 } from "@/lib/external-apps";
 import { extractVideoId } from "@/lib/youtube";
+import { FlowProgress } from "./FlowProgress";
 import { ScriptCopyHelper } from "./ScriptCopyHelper";
 import { cacheVideoSnapshot } from "./VideoNotFoundRecovery";
 
@@ -63,19 +70,26 @@ export function UrlPasteForm() {
     ok: boolean;
     text: string;
   } | null>(null);
+  /** 복사 완료 여부 — 다음 단계(4번) 노란 표시용. 유지됨. */
   const [scriptCopied, setScriptCopied] = useState(false);
+  /** 버튼 라벨「복사됨」짧은 피드백용 */
+  const [copyFlash, setCopyFlash] = useState(false);
+
+  function markScriptCopied(notice: string) {
+    setScriptCopied(true);
+    setCopyFlash(true);
+    setScriptNotice({ ok: true, text: notice });
+    window.setTimeout(() => setCopyFlash(false), 2500);
+  }
 
   async function copyScript() {
     const text = normalizePastedText(pastedScript);
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setScriptCopied(true);
-      setScriptNotice({
-        ok: true,
-        text: `${flowLabel("copyScript")} 완료 · ${text.length.toLocaleString()}자. 제미나이·다글로에 붙여 요약한 뒤 「${flowLabel("openSummary")}」를 누르세요.`,
-      });
-      setTimeout(() => setScriptCopied(false), 2500);
+      markScriptCopied(
+        `${flowLabel("copyScript")} 완료 · ${text.length.toLocaleString()}자. 제미나이·다글로에 붙여 요약한 뒤 「${flowLabel("openSummary")}」를 누르세요.`
+      );
     } catch {
       setError("복사에 실패했습니다. 스크립트 칸에서 직접 선택·복사해 주세요.");
     }
@@ -92,12 +106,9 @@ export function UrlPasteForm() {
     void navigator.clipboard
       .writeText(text)
       .then(() => {
-        setScriptCopied(true);
-        setScriptNotice({
-          ok: true,
-          text: `${flowLabel("copyScript")} 완료 · ${EXTERNAL_APP_LABEL[app]}에서 붙여 요약하세요. 끝나면 「${flowLabel("openSummary")}」.`,
-        });
-        setTimeout(() => setScriptCopied(false), 2500);
+        markScriptCopied(
+          `${flowLabel("copyScript")} 완료 · ${EXTERNAL_APP_LABEL[app]}에서 붙여 요약하세요. 끝나면 「${flowLabel("openSummary")}」.`
+        );
       })
       .catch(() => {
         setError("복사에 실패했습니다. 자막 복사 후 앱에서 붙여넣기 하세요.");
@@ -123,7 +134,11 @@ export function UrlPasteForm() {
   const hasScript = hasUsablePastedScript(pastedScript);
   const step1Done = Boolean(videoId);
   const step2Done = hasScript;
-  const nextStep: 1 | 2 | 3 = !step1Done ? 1 : !step2Done ? 2 : 3;
+  const homeNextStep = nextFlowStepForHome({
+    hasUrl: step1Done,
+    hasScript: step2Done,
+    scriptCopied,
+  });
 
   function goToVideo(id: string) {
     window.location.assign(`/videos/${id}`);
@@ -131,6 +146,8 @@ export function UrlPasteForm() {
 
   function onScriptFetched(script: string) {
     setPastedScript(script);
+    setScriptCopied(false);
+    setCopyFlash(false);
     const len = normalizePastedText(script).length;
     setScriptNotice({
       ok: true,
@@ -373,114 +390,8 @@ export function UrlPasteForm() {
             YouTube FactCheck
           </h1>
 
-          {/* 사용자가 할 일 — 순서 안내 */}
-          <div className="mt-3 rounded-xl border border-ink-200 bg-white/95 p-4 space-y-3">
-            <p className="text-sm font-semibold text-ink-900">
-              이렇게 진행하세요 (순서대로)
-            </p>
-            <ol className="space-y-2.5 text-sm">
-              <li
-                className={`flex gap-2.5 rounded-lg px-2.5 py-2 ${
-                  nextStep === 1
-                    ? "bg-accent-muted/50 ring-1 ring-accent/30"
-                    : "bg-ink-50/80"
-                }`}
-              >
-                {step1Done ? (
-                  <CheckCircle2 className="h-5 w-5 text-accent shrink-0 mt-0.5" />
-                ) : (
-                  <Circle className="h-5 w-5 text-ink-400 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <p className="font-medium text-ink-900">
-                    {flowLabel("url", "유튜브 주소 붙여넣기")}
-                  </p>
-                  <p className="text-xs text-ink-600 mt-0.5">
-                    유튜브 공유 → 링크 복사 → 아래 주소 칸에 붙여넣기
-                    {step1Done ? " · 완료" : ""}
-                  </p>
-                </div>
-              </li>
-              <li
-                className={`flex gap-2.5 rounded-lg px-2.5 py-2 ${
-                  nextStep === 2
-                    ? "bg-accent-muted/50 ring-1 ring-accent/30"
-                    : "bg-ink-50/80"
-                }`}
-              >
-                {step2Done ? (
-                  <CheckCircle2 className="h-5 w-5 text-accent shrink-0 mt-0.5" />
-                ) : (
-                  <Circle className="h-5 w-5 text-ink-400 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <p className="font-medium text-ink-900">
-                    {flowLabel("fetchScript", "자막 자동 가져오기")}
-                  </p>
-                  <p className="text-xs text-ink-600 mt-0.5">
-                    「자막 자동 가져오기」→ 스크립트(자막) 칸에 채워짐
-                    {step2Done
-                      ? ` · 완료 (${scriptLen.toLocaleString()}자)`
-                      : ""}
-                  </p>
-                </div>
-              </li>
-              <li
-                className={`flex gap-2.5 rounded-lg px-2.5 py-2 ${
-                  nextStep === 3 && !scriptCopied
-                    ? "bg-accent-muted/50 ring-1 ring-accent/30"
-                    : "bg-ink-50/80"
-                }`}
-              >
-                {scriptCopied ? (
-                  <CheckCircle2 className="h-5 w-5 text-accent shrink-0 mt-0.5" />
-                ) : (
-                  <Circle className="h-5 w-5 text-ink-400 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <p className="font-medium text-ink-900">
-                    {flowLabel("copyScript", "자막 복사 → 제미나이·다글로 요약")}
-                  </p>
-                  <p className="text-xs text-ink-600 mt-0.5">
-                    「{flowLabel("copyScript")}」또는 제미나이·다글로 → 요약 받기
-                  </p>
-                </div>
-              </li>
-              <li
-                className={`flex gap-2.5 rounded-lg px-2.5 py-2 ${
-                  nextStep === 3 && scriptCopied
-                    ? "bg-accent-muted/50 ring-1 ring-accent/30"
-                    : "bg-ink-50/80"
-                }`}
-              >
-                {scriptCopied ? (
-                  <CheckCircle2 className="h-5 w-5 text-accent shrink-0 mt-0.5" />
-                ) : (
-                  <Circle className="h-5 w-5 text-ink-400 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <p className="font-medium text-ink-900">
-                    {flowLabel("openSummary")}
-                  </p>
-                  <p className="text-xs text-ink-600 mt-0.5">
-                    다음 화면에서 {FLOW.pasteSummary.n}–{FLOW.saveSummary.n}번
-                    (요약 붙여넣기·정리·저장)
-                  </p>
-                </div>
-              </li>
-            </ol>
-            <p className="text-xs font-medium text-accent" role="status">
-              {nextStep === 1 &&
-                `👉 지금: ${flowLabel("url")}를 붙여넣으세요.`}
-              {nextStep === 2 &&
-                `👉 지금: 「${flowLabel("fetchScript")}」를 눌러 주세요.`}
-              {nextStep === 3 &&
-                !scriptCopied &&
-                `👉 지금: 「${flowLabel("copyScript")}」또는 제미나이·다글로.`}
-              {nextStep === 3 &&
-                scriptCopied &&
-                `👉 지금: 요약 후 「${flowLabel("openSummary")}」.`}
-            </p>
+          <div className="mt-3">
+            <FlowProgress current={homeNextStep} />
           </div>
         </div>
 
@@ -510,12 +421,14 @@ export function UrlPasteForm() {
             autoFetchOnUrl
           />
 
-          {/* 자막 복사 완료/실패 알림 */}
+          {/* 자막 가져오기·복사 완료/실패 — 다음 단계 안내는 노란색 */}
           {scriptNotice && (
             <div
               className={`rounded-xl border px-4 py-3 text-sm font-medium flex gap-2 ${
                 scriptNotice.ok
-                  ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                  ? scriptCopied || homeNextStep >= 3
+                    ? `${NEXT_STEP_YELLOW} border-[#a16207]`
+                    : "border-emerald-300 bg-emerald-50 text-emerald-900"
                   : "border-verify-false/30 bg-verify-false/5 text-verify-false"
               }`}
               role="status"
@@ -537,7 +450,11 @@ export function UrlPasteForm() {
               value={pastedScript}
               onChange={(e) => {
                 setPastedScript(e.target.value);
-                if (!e.target.value.trim()) setScriptNotice(null);
+                if (!e.target.value.trim()) {
+                  setScriptNotice(null);
+                  setScriptCopied(false);
+                  setCopyFlash(false);
+                }
               }}
               rows={5}
               placeholder="「2. 자막 자동 가져오기」후 여기에 채워집니다"
@@ -563,16 +480,22 @@ export function UrlPasteForm() {
                 <button
                   type="button"
                   onClick={() => void copyScript()}
-                  className="inline-flex items-center gap-1.5 min-h-9 rounded-lg border border-accent/40 bg-accent-muted/40 px-3 text-xs font-medium text-ink-900 hover:border-accent"
+                  className={`inline-flex items-center gap-1.5 min-h-9 rounded-lg border px-3 text-xs font-medium ${
+                    homeNextStep === 3
+                      ? NEXT_STEP_YELLOW_BTN
+                      : "border-accent/40 bg-accent-muted/40 text-ink-900 hover:border-accent"
+                  }`}
                 >
-                  {scriptCopied ? (
-                    <Check className="h-3.5 w-3.5 text-emerald-600" />
+                  {copyFlash || scriptCopied ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-700" />
                   ) : (
                     <Copy className="h-3.5 w-3.5" />
                   )}
-                  {scriptCopied
+                  {copyFlash
                     ? `${FLOW.copyScript.n}. 복사됨`
-                    : flowLabel("copyScript", "자막 복사 (외부 AI용)")}
+                    : scriptCopied
+                      ? `${FLOW.copyScript.n}. 복사 완료`
+                      : flowLabel("copyScript", "자막 복사 (외부 AI용)")}
                 </button>
                 <button
                   type="button"
@@ -715,7 +638,11 @@ export function UrlPasteForm() {
         <button
           type="submit"
           disabled={busy}
-          className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-accent min-h-12 px-5 py-3.5 text-white font-medium hover:bg-ink-900 disabled:opacity-60 transition-colors shadow-lg sm:shadow-none"
+          className={`w-full inline-flex items-center justify-center gap-2 rounded-xl min-h-12 px-5 py-3.5 font-medium disabled:opacity-60 transition-colors shadow-lg sm:shadow-none ${
+            homeNextStep === 4
+              ? NEXT_STEP_YELLOW_BTN
+              : "bg-accent text-white hover:bg-ink-900"
+          }`}
         >
           {busy ? (
             <>
