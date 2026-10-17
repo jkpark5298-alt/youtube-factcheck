@@ -117,10 +117,13 @@ export function ScriptCopyHelper({
         throw new Error(data.error || "자막을 가져오지 못했습니다.");
       }
       onScriptFetched?.(data.transcript);
-      const langNote =
-        data.langTried && data.langTried !== "default"
-          ? ` · 언어 ${data.langTried}`
-          : "";
+      const langLabel =
+        data.langTried === "ko-youtube"
+          ? "ko (유튜브)"
+          : data.langTried && data.langTried !== "default"
+            ? data.langTried
+            : "";
+      const langNote = langLabel ? ` · 언어 ${langLabel}` : "";
       setFetchMsg(
         `${data.length?.toLocaleString() ?? data.transcript.length}자를 ② 스크립트(자막) 칸에 넣었습니다.${langNote}`
       );

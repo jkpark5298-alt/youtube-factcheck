@@ -1,3 +1,4 @@
+import { YoutubeTranscript } from "youtube-transcript";
 import { normalizePastedText } from "./paste";
 
 const BASE = "https://youtube-transcript.ai/transcript";
@@ -246,16 +247,31 @@ export async function fetchYoutubeTranscriptAi(
     }
   }
 
-  // 2) 한국어 우선 — 기본 트랙이 영문 자동자막인 경우를 막기 위해 ko를 먼저 시도
-  if (preferred !== "ko") {
-    const ko = await pull("ko");
+  // 2) 기본 트랙 1회 (할당량 절약). 이미 한글이면 그대로 사용.
+  const first = await pull("");
+  if (first && acceptAsKorean(first)) {
+    return {
+      text: first.text,
+      langTried: first.lang,
+      sourceUrl: first.sourceUrl,
+    };
+  }
+
+  // 3) 기본이 영문 등이면 한국어 트랙 재시도 (ko / a-ko + 목록에 있는 코드)
+  const koCandidates = [
+    "ko",
+    "a-ko",
+    ...(first?.meta.available.filter(isKoreanTrackCode) ?? []),
+  ].filter((v, i, arr) => arr.indexOf(v) === i && v !== preferred);
+
+  for (const lang of koCandidates) {
+    const ko = await pull(lang);
     if (ko && acceptAsKorean(ko)) {
-      return { text: ko.text, langTried: "ko", sourceUrl: ko.sourceUrl };
+      return { text: ko.text, langTried: lang, sourceUrl: ko.sourceUrl };
     }
   }
 
-  // 3) 서비스 기본 트랙 (ko 없거나 한글이 아닐 때)
-  const first = await pull("");
+  // 4) 한글을 못 찾으면 기본(영문 등)이라도 반환 — 호출측에서 유튜브 직접 폴백 가능
   if (first) {
     return {
       text: first.text,
@@ -264,7 +280,7 @@ export async function fetchYoutubeTranscriptAi(
     };
   }
 
-  // 4) 영어 폴백
+  // 5) 영어 폴백
   if (preferred !== "en") {
     const en = await pull("en");
     if (en) {
@@ -275,4 +291,170 @@ export async function fetchYoutubeTranscriptAi(
   throw new Error(
     `${lastError} youtube-transcript.ai에서 자막이 없는 영상이거나 일시 오류일 수 있습니다.`
   );
+}
+
+function parseCaptionJson3(raw: string): string {
+  try {
+    const json = JSON.parse(raw) as {
+      events?: Array<{ segs?: Array<{ utf8?: string }> }>;
+    };
+    return (json.events || [])
+      .flatMap((e) => e.segs || [])
+      .map((s) => s.utf8 || "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return raw
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+}
+
+function normalizeCaptionUrl(baseUrl: string): string {
+  let url = baseUrl.replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+  if (!/[?&]fmt=/.test(url)) {
+    url += (url.includes("?") ? "&" : "?") + "fmt=json3";
+  } else if (!/[?&]fmt=json3/.test(url)) {
+    url = url.replace(/([?&]fmt=)[^&]*/i, "$1json3");
+  }
+  return url;
+}
+
+/** watch HTML에서 한국어(자동) 자막 baseUrl 추출 */
+async function findKoreanCaptionBaseUrl(
+  videoId: string,
+  timeoutMs: number
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}&hl=ko`,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept-Language": "ko-KR,ko;q=0.9",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return null;
+    const html = await res.text();
+    const marker = '"captionTracks":';
+    const idx = html.indexOf(marker);
+    if (idx < 0) return null;
+    const start = idx + marker.length;
+    let depth = 0;
+    let end = start;
+    for (let i = start; i < html.length; i++) {
+      const ch = html[i];
+      if (ch === "[") depth++;
+      if (ch === "]") {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    const tracks = JSON.parse(html.slice(start, end)) as Array<{
+      languageCode?: string;
+      kind?: string;
+      baseUrl?: string;
+    }>;
+    const ko =
+      tracks.find(
+        (t) =>
+          t.languageCode === "ko" &&
+          t.kind === "asr" &&
+          typeof t.baseUrl === "string"
+      ) ||
+      tracks.find(
+        (t) =>
+          (t.languageCode === "ko" ||
+            (t.languageCode || "").startsWith("ko-")) &&
+          typeof t.baseUrl === "string"
+      );
+    return ko?.baseUrl ? normalizeCaptionUrl(ko.baseUrl) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 유튜브 한국어 자동자막을 직접 가져온다.
+ * youtube-transcript.ai 기본이 영문(en)인 영상(오빠두 luimFKB9ZD8 등) 대응.
+ * 1순위: youtube-transcript 패키지(lang=ko) — 할당량 없음
+ * 2순위: watch HTML captionTracks / timedtext
+ */
+export async function fetchYoutubeKoreanTimedText(
+  videoId: string,
+  timeoutMs = 15_000
+): Promise<{ text: string; langTried: string; sourceUrl: string } | null> {
+  const id = videoId.trim();
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return null;
+
+  try {
+    const parts = await Promise.race([
+      YoutubeTranscript.fetchTranscript(id, { lang: "ko" }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), timeoutMs)
+      ),
+    ]);
+    const text = normalizePastedText(
+      dedupeTranscriptRepeats(
+        parts
+          .map((p) => p.text)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+    );
+    if (text.length >= 80 && looksLikeKoreanText(text)) {
+      return {
+        text,
+        langTried: "ko-youtube",
+        sourceUrl: `https://www.youtube.com/watch?v=${id}&lang=ko`,
+      };
+    }
+  } catch {
+    /* timedtext 폴백 */
+  }
+
+  const fromPlayer = await findKoreanCaptionBaseUrl(id, timeoutMs);
+  const attempts = [
+    ...(fromPlayer ? [fromPlayer] : []),
+    `https://www.youtube.com/api/timedtext?v=${id}&lang=ko&kind=asr&fmt=json3`,
+    `https://www.youtube.com/api/timedtext?v=${id}&lang=ko&fmt=json3`,
+    `https://www.youtube.com/api/timedtext?v=${id}&lang=ko-KR&kind=asr&fmt=json3`,
+  ];
+
+  for (const sourceUrl of attempts) {
+    try {
+      const res = await fetch(sourceUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept-Language": "ko-KR,ko;q=0.9",
+          Referer: `https://www.youtube.com/watch?v=${id}`,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      const raw = await res.text();
+      if (!raw || raw.length < 20) continue;
+      const text = normalizePastedText(
+        dedupeTranscriptRepeats(parseCaptionJson3(raw))
+      );
+      if (text.length >= 80 && looksLikeKoreanText(text)) {
+        return { text, langTried: "ko-youtube", sourceUrl };
+      }
+    } catch {
+      /* next */
+    }
+  }
+  return null;
 }
