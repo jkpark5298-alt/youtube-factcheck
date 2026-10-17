@@ -21,52 +21,33 @@ const CIRCLED_NUMBERS = [
 ] as const;
 
 type Pos = {
-  /** 보이는 본문 상자. 막대는 커서 줄이 아니라 이 상자의 상단에 둔다. */
-  editorTop: number;
-  editorBottom: number;
+  /** 가로 정렬용 본문 왼쪽 */
   editorLeft: number;
   editorWidth: number;
 };
 
-/** TipTap 커서/선택 좌표 (collapsed caret 포함 — iOS DOM rect 빈 값 보완) */
-function rectFromEditor(editor: Editor): DOMRect | null {
-  try {
-    const focused =
-      editor.isFocused ||
-      editor.view.hasFocus() ||
-      editor.view.dom.contains(document.activeElement);
-    if (!focused) return null;
-    // 선택 전체 박스가 아니라 캐럿 한 줄만. 여러 줄 선택 박스는 서식 바를 본문 한가운데 올린다.
-    const head = editor.state.selection.head;
-    const a = editor.view.coordsAtPos(head);
-    return new DOMRect(a.left, a.top, 2, Math.max(14, a.bottom - a.top));
-  } catch {
-    return null;
+/** 커서가 본문(ProseMirror) 안에 있는지 — 표시 여부만 결정 */
+function caretInEditor(): boolean {
+  const ed = getActiveReportEditor();
+  if (ed) {
+    try {
+      const focused =
+        ed.isFocused ||
+        ed.view.hasFocus() ||
+        ed.view.dom.contains(document.activeElement);
+      if (focused) return true;
+    } catch {
+      /* fall through */
+    }
   }
-}
-
-function rectFromDomSelection(): DOMRect | null {
   const sel = window.getSelection();
-  if (!sel?.rangeCount) return null;
+  if (!sel?.rangeCount) return false;
   const range = sel.getRangeAt(0);
   const node =
     range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
       ? (range.commonAncestorContainer as Element)
       : range.commonAncestorContainer.parentElement;
-  if (!node?.closest?.(".ProseMirror")) return null;
-
-  const rects = range.getClientRects();
-  if (rects.length) return rects[rects.length - 1]!;
-
-  const r = range.getBoundingClientRect();
-  if (r.top === 0 && r.left === 0 && r.width === 0 && r.height === 0) {
-    return null;
-  }
-  // collapsed라도 top/left 가 있으면 사용 (높이만 보정)
-  if (r.height < 2) {
-    return new DOMRect(r.left, r.top, Math.max(2, r.width), 16);
-  }
-  return r;
+  return Boolean(node?.closest?.(".ProseMirror"));
 }
 
 function editorBox(): DOMRect | null {
@@ -79,23 +60,24 @@ function editorBox(): DOMRect | null {
   }
 }
 
-function resolveAnchorRect(): DOMRect | null {
-  const ed = getActiveReportEditor();
-  if (ed) {
-    const fromEd = rectFromEditor(ed);
-    if (fromEd) return fromEd;
-  }
-  return rectFromDomSelection();
-}
-
 function formatBubbleWidth(maxBarWidth: number) {
   if (typeof window === "undefined") return maxBarWidth;
   return Math.min(maxBarWidth, window.innerWidth - 16);
 }
 
+/** 사이트 헤더 등 고정 요소 아래부터 쓰기 */
+function chromeOffsetTop(): number {
+  const header = document.querySelector("header");
+  if (!header) return 0;
+  const r = header.getBoundingClientRect();
+  if (r.bottom <= 0) return 0;
+  return Math.max(0, r.bottom);
+}
+
 /**
- * 커서가 본문 안에 있어도 서식 바는 보이는 본문 상단에 둔다.
- * 커서 줄 바로 위로는 내려가지 않는다.
+ * 커서가 본문에 있을 때만 표시.
+ * 위치는 커서 줄이 아니라 **지금 보이는 페이지(뷰포트) 상단**.
+ * 화면 전체에 붙는 고정 헤더가 아니라, 포커스·스크롤에 따라 보이게/숨기게.
  */
 function useFormatBubbleAnchor(active: boolean) {
   const [pos, setPos] = useState<Pos | null>(null);
@@ -113,11 +95,15 @@ function useFormatBubbleAnchor(active: boolean) {
     let selecting = false;
 
     const place = () => {
+      if (!caretInEditor()) return false;
       const box = editorBox();
       if (!box || box.width < 40 || box.height < 20) return false;
+      // 본문이 화면 밖으로 완전히 나가면 숨김
+      const vv = window.visualViewport;
+      const viewTop = vv?.offsetTop ?? 0;
+      const viewBottom = viewTop + (vv?.height ?? window.innerHeight);
+      if (box.bottom < viewTop + 40 || box.top > viewBottom - 40) return false;
       setPos({
-        editorTop: box.top,
-        editorBottom: box.bottom,
         editorLeft: box.left,
         editorWidth: box.width,
       });
@@ -132,12 +118,10 @@ function useFormatBubbleAnchor(active: boolean) {
           setVisible(false);
           return;
         }
-        const focused = Boolean(resolveAnchorRect());
-        if (!focused || !place()) {
-          // 서식 버튼 탭 순간 포커스가 잠깐 빠지는 경우 — 바로 숨기지 않음
+        if (!place()) {
           if (hideTimer) clearTimeout(hideTimer);
           hideTimer = setTimeout(() => {
-            if (!resolveAnchorRect() || !place()) setVisible(false);
+            if (!place()) setVisible(false);
           }, 280);
           return;
         }
@@ -219,9 +203,10 @@ function useFormatBubbleAnchor(active: boolean) {
 }
 
 const MOBILE_BUBBLE_WIDTH = 360;
+const BAR_PAD_ATTR = "data-format-bar-pad";
 
 /**
- * 아이폰 등: 커서가 있어도 보이는 본문 상단에 붙는 글자 서식 바.
+ * 아이폰 등: 커서가 본문에 있을 때 보이는 페이지 상단 서식 바.
  */
 export function MobileFormatBubble({
   active,
@@ -323,7 +308,7 @@ const YELLOW_HIGHLIGHT =
   HIGHLIGHT_COLORS.find((c) => c.id === "yellow")?.bg ?? "#fef08a";
 
 /**
- * 데스크톱: 커서가 있어도 보이는 본문 상단에 붙는 서식. 굵게·번호·노란 형광만.
+ * 데스크톱: 보이는 페이지 상단 서식. 굵게·번호·노란 형광만.
  */
 export function DesktopFormatBubble({
   active,
@@ -395,7 +380,6 @@ function FormatBubbleFrame({
     top: 0,
     left: 8,
     ready: false,
-    clear: false,
   });
 
   useLayoutEffect(() => {
@@ -404,29 +388,46 @@ function FormatBubbleFrame({
     const w = node.offsetWidth;
     const gap = 8;
     const vv = window.visualViewport;
-    const viewTop = (vv?.offsetTop ?? 0) + 8;
+    const viewTop = vv?.offsetTop ?? 0;
     const viewLeft = vv?.offsetLeft ?? 0;
     const viewWidth = vv?.width ?? window.innerWidth;
-    const viewBottom =
-      (vv?.offsetTop ?? 0) + (vv?.height ?? window.innerHeight) - 8;
-    const visibleTop = Math.max(pos.editorTop, viewTop);
-    const visibleBottom = Math.min(pos.editorBottom, viewBottom);
-    let top = visibleTop + gap;
-    if (top + h > visibleBottom - gap) {
-      top = Math.max(visibleTop, visibleBottom - h - gap);
-    }
+    // 보이는 페이지 상단 (헤더 아래). 커서 줄 Y는 쓰지 않음.
+    const top = viewTop + chromeOffsetTop() + gap;
     const barWidth = width ?? w;
     const left = Math.max(
       viewLeft + 8,
       Math.min(pos.editorLeft + 8, viewLeft + viewWidth - barWidth - 8)
     );
-    const clear = top + h <= viewBottom && visibleBottom - visibleTop > h;
-    setBox({ top, left, ready: true, clear });
+    setBox({ top, left, ready: true });
+
+    // 본문 첫 줄이 막대에 가리지 않도록 패딩 (스크롤해도 상단 고정 느낌은 뷰포트 기준)
+    const ed = getActiveReportEditor();
+    const dom = ed?.view?.dom as HTMLElement | undefined;
+    if (dom) {
+      dom.setAttribute(BAR_PAD_ATTR, "1");
+      dom.style.scrollPaddingTop = `${h + gap * 2}px`;
+    }
+
+    return () => {
+      if (dom?.getAttribute(BAR_PAD_ATTR) === "1") {
+        dom.style.scrollPaddingTop = "";
+        dom.removeAttribute(BAR_PAD_ATTR);
+      }
+    };
   }, [node, pos, width]);
 
-  if (typeof document === "undefined") return null;
+  useEffect(() => {
+    return () => {
+      const ed = getActiveReportEditor();
+      const dom = ed?.view?.dom as HTMLElement | undefined;
+      if (dom?.getAttribute(BAR_PAD_ATTR) === "1") {
+        dom.style.scrollPaddingTop = "";
+        dom.removeAttribute(BAR_PAD_ATTR);
+      }
+    };
+  }, []);
 
-  const shown = box.ready && box.clear;
+  if (typeof document === "undefined") return null;
 
   return createPortal(
     <div
@@ -437,9 +438,9 @@ function FormatBubbleFrame({
         top: box.top,
         left: box.left,
         width,
-        visibility: shown ? "visible" : "hidden",
+        visibility: box.ready ? "visible" : "hidden",
       }}
-      inert={shown ? undefined : true}
+      inert={box.ready ? undefined : true}
       onMouseDown={(e) => e.preventDefault()}
     >
       {children}
