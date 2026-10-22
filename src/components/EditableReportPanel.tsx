@@ -518,6 +518,20 @@ function inlineImagesToSMarkers(html: string): { body: string; urls: string[] } 
   return { body, urls };
 }
 
+/** 본문 편집용: 섹션을 하나의 연속 본문으로 합치고 반복된 본문을 정리 */
+function toSingleBodyDraft(report: TypedReport): TypedReport {
+  const merged = mergeReportSectionsToSingleBody(report);
+  return {
+    ...merged,
+    sections: merged.sections.map((sec) => {
+      const cleaned = dedupeRepeatedReportBodyHtml(sec.body || "");
+      return cleaned === (sec.body || "")
+        ? sec
+        : { ...sec, body: cleaned, rich: true };
+    }),
+  };
+}
+
 export function EditableReportPanel({
   video,
   draftPhase = false,
@@ -791,10 +805,14 @@ export function EditableReportPanel({
     if (editing && !wasEditingRef.current && report) {
       const stabilized = stabilizeReportFcAnchors(cloneReport(report));
       const withArts = withArticleImages(stabilized, localVideo);
-      setDraft(migrateReportToInlineImages(withArts));
-      setSavedSections(report.sections.map(sectionSnapshot));
+      // 본문 탭은 섹션을 하나의 편집기로 합친다. 섹션마다 편집기가 따로 있으면
+      // 빈 섹션이 지울 수 없는 빈 공간이 되고, 섹션 경계에서 백스페이스가 막힌다.
+      const single = toSingleBodyDraft(migrateReportToInlineImages(withArts));
+      setDraft(single);
+      setSavedSections(single.sections.map(sectionSnapshot));
       setSectionSavedFlash({});
-      lastSavedSnapRef.current = JSON.stringify(report);
+      // 합치기만으로는 자동 저장하지 않고, 사용자가 고칠 때 저장한다
+      lastSavedSnapRef.current = JSON.stringify(single);
       setAutoSaveStatus("idle");
       resetHistory();
     }
@@ -871,16 +889,7 @@ export function EditableReportPanel({
   function goBodyMode() {
     setDraft((prev) => {
       if (!prev) return prev;
-      const merged = mergeReportSectionsToSingleBody(prev);
-      const next = {
-        ...merged,
-        sections: merged.sections.map((sec) => {
-          const cleaned = dedupeRepeatedReportBodyHtml(sec.body || "");
-          return cleaned === (sec.body || "")
-            ? sec
-            : { ...sec, body: cleaned, rich: true };
-        }),
-      };
+      const next = toSingleBodyDraft(prev);
       queueMicrotask(() => {
         setSavedSections(next.sections.map(sectionSnapshot));
         setActiveSectionIdx(0);
@@ -965,9 +974,14 @@ export function EditableReportPanel({
     };
   }, [video.id, video.skipFactCheck]);
 
+  // 서버는 status 가 ready 일 때만 형식을 갱신한다. 다른 상태에서 요청하면
+  // 형식이 그대로라 새로고침 → 재요청이 무한 반복되므로 ready 에서 영상당 한 번만.
+  const rebuildRequestedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!video.report || video.report.format === "general_v5") return;
-    let cancelled = false;
+    if (video.status !== "ready") return;
+    if (rebuildRequestedRef.current === video.id) return;
+    rebuildRequestedRef.current = video.id;
     (async () => {
       setRebuilding(true);
       try {
@@ -977,18 +991,18 @@ export function EditableReportPanel({
           body: JSON.stringify({ rebuild: true }),
         });
         const data = (await res.json()) as { video?: VideoRecord };
-        if (!cancelled && data.video?.report) {
-          setDraft(data.video.report);
+        if (data.video?.report) {
+          // draft 는 보기 모드에서만 report 로 동기화된다 (편집 중 내용 보호)
+          setLocalVideo(data.video);
           router.refresh();
         }
+      } catch {
+        /* 형식 갱신 실패는 편집을 막지 않음 */
       } finally {
-        if (!cancelled) setRebuilding(false);
+        setRebuilding(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [video.id, video.report, router]);
+  }, [video.id, video.report, video.status, router]);
 
   const markers = useMemo(
     () => (draft ? collectFcMarkers(draft) : []),
