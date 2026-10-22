@@ -197,7 +197,7 @@ export function PassReportConfirmBar({ video }: { video: VideoRecord }) {
             <ol className="mt-1 ml-4 list-none space-y-0.5 text-sm">
               <li>{flowLabel("copySummary")} → 제미나이에서 보고서 받기</li>
               <li>
-                {flowLabel("pasteReport")} → 「본문에 반영」
+                {flowLabel("pasteReport")} → 「9. 본문 교체」
               </li>
               <li>
                 문장 끝 <strong>S</strong> 이미지(선택) →{" "}

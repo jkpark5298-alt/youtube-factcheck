@@ -1211,12 +1211,27 @@ export type NarrativeSec = {
 };
 
 /** 요약 본문 → 논리 섹션 (번호·불릿·결론) */
+/**
+ * 요약·AI 글쓰기에서 넘어온 마크다운 흔적 정리 (보고서 자동 조립용).
+ * `코드`·**굵게**·### 제목 기호를 지우고 줄바꿈은 유지한다.
+ */
+export function cleanGeneratedText(text: string): string {
+  return (text || "")
+    .replace(/`+/g, "")
+    .replace(/\*\*([^*\n]+?)\*\*/g, "$1")
+    .replace(/__([^_\n]+?)__/g, "$1")
+    .replace(/\*\*/g, "")
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 export function parseOverviewNarrative(overview: string): {
   intro: string;
   sections: NarrativeSec[];
   conclusion: string;
 } {
-  const lines = overview
+  const lines = cleanGeneratedText(overview)
     .split(/\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -1453,9 +1468,12 @@ function matchBundlesToSections(
  * 팩트체크 주장·답변·이미지는 entries로만 내려보내 화면/PDF 중복을 막는다.
  */
 function sectionBodyHtml(title: string, details: string[]): string {
-  const lead = details.length ? details.join(" ") : title;
-  if (!lead.trim()) return "";
-  return `<p>${escapeHtml(lead)}</p>`;
+  // 세부 항목(역할·주요 기능 등)은 한 덩어리로 붙이지 않고 문단별로
+  const parts = (details.length ? details : [title])
+    .map((d) => d.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  return parts.map((d) => `<p>${escapeHtml(d)}</p>`).join("");
 }
 
 function entryFromBundle(m: FcBundle) {
@@ -1504,13 +1522,15 @@ export function buildTypedReport(
     bundles
   );
 
-  const conclusionText =
+  const cleanOverview = cleanGeneratedText(video.overview || "");
+  const conclusionText = cleanGeneratedText(
     parsed.conclusion ||
-    video.summaryBullets?.[0] ||
-    parsed.sections[0]?.details[0] ||
-    parsed.intro ||
-    video.overview.split(/[.。!?？\n]/).find((s) => s.trim().length > 20)?.trim() ||
-    video.overview.slice(0, 160);
+      video.summaryBullets?.[0] ||
+      parsed.sections[0]?.details[0] ||
+      parsed.intro ||
+      cleanOverview.split(/[.。!?？\n]/).find((s) => s.trim().length > 20)?.trim() ||
+      cleanOverview.slice(0, 160)
+  );
 
   const sections: TypedReport["sections"] = [];
 
@@ -1569,7 +1589,7 @@ export function buildTypedReport(
     });
     sections.push({
       heading: "요약",
-      body: `<p>${escapeHtml(video.overview || "")}</p>`,
+      body: plainTextToHtml(cleanOverview),
       rich: true,
     });
     for (const b of bundles) {

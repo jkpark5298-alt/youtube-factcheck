@@ -1,6 +1,7 @@
 import { chatJson, hasLlm } from "./llm";
 import {
   buildTypedReport,
+  cleanGeneratedText,
   highlightConclusion,
 } from "./report";
 import { stabilizeReportFcAnchors } from "./fc-markers";
@@ -195,8 +196,8 @@ JSON:
 
     const usedItemIds = new Set<string>();
     const sections: TypedReport["sections"] = rawSections.map((s, idx) => {
-      const heading = String(s.heading).trim().slice(0, 80);
-      const bodyText = String(s.body ?? "").trim();
+      const heading = cleanGeneratedText(String(s.heading)).slice(0, 80);
+      const bodyText = cleanGeneratedText(String(s.body ?? ""));
       const isConclusion = idx === 0 || /^결론/.test(heading);
       const related = (s.relatedItemIds ?? [])
         .map(String)
